@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NSRI Training — TOIL Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, query, orderBy, onSnapshot, getDoc, getDocs, setDoc }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  // ╔══════════════════════════════════════════════════════════════╗
+  // ║  PASTE YOUR FIREBASE CONFIG HERE                            ║
+  // ╚══════════════════════════════════════════════════════════════╝
+  const firebaseConfig = {
+    apiKey:            "AIzaSyBnroVBthSc907eOKkyd2nM_wIM9MsPpe4",
+    authDomain:        "toil-tracker-ops.firebaseapp.com",
+    databaseURL:       "https://toil-tracker-ops-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId:         "toil-tracker-ops",
+    storageBucket:     "toil-tracker-ops.firebasestorage.app",
+    messagingSenderId: "929758901073",
+    appId:             "1:929758901073:web:862e42b19ce02f3198d970"
+  };
+
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db   = getFirestore(app);
+  window._fb = { auth, db, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+                 collection, addDoc, updateDoc, doc, query, orderBy, onSnapshot, getDoc };
+
+// ── STAFF MANAGEMENT (Admin only) ────────────────────────────────
+async function loadStaffFromFirestore(){
+  if(demo) return;
+  try{
+    const fb=window._fb;
+    const snap=await fb.getDocs(fb.collection(fb.db,'staff_profiles'));
+    if(!snap.empty){
+      STAFF=snap.docs.map(d=>({id:d.id,...d.data()}));
+      populateSelects();
+    }
+  } catch(e){ console.log('Staff load error:',e); }
+}
+
+function renderStaffList(){
+  const card=document.getElementById('staff-list-card');
+  if(!STAFF.length){
+    card.innerHTML='<div class="empty"><div class="empty-icon">👥</div><div class="empty-title">No staff profiles</div><p>Add your first staff member above</p></div>';
+    return;
+  }
+  card.innerHTML=`<table style="width:100%;border-collapse:collapse">
+    <thead><tr>
+      <th style="text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:12px 20px;border-bottom:1.5px solid var(--border);background:#f8f9fd">Name</th>
+      <th style="text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:12px 20px;border-bottom:1.5px solid var(--border);background:#f8f9fd">Role / Title</th>
+      <th style="text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:12px 20px;border-bottom:1.5px solid var(--border);background:#f8f9fd">TOIL Balance</th>
+      <th style="padding:12px 20px;border-bottom:1.5px solid var(--border);background:#f8f9fd"></th>
+    </tr></thead>
+    <tbody>${STAFF.map(s=>{
+      const b=bal(s.id);
+      const nc=b>=CAP?'red':b>=WARN?'amber':'green';
+      return `<tr>
+        <td style="padding:14px 20px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="width:36px;height:36px;border-radius:50%;background:var(--navy);color:white;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0">${ini(s.name)}</div>
+            <strong style="color:var(--navy)">${s.name}</strong>
+          </div>
+        </td>
+        <td style="padding:14px 20px;border-bottom:1px solid var(--border);color:var(--muted)">${s.role}</td>
+        <td style="padding:14px 20px;border-bottom:1px solid var(--border)"><span style="font-weight:700;color:var(--${nc})">${b}</span><span style="color:var(--muted);font-size:12px"> / ${CAP} days</span></td>
+        <td style="padding:14px 20px;border-bottom:1px solid var(--border);text-align:right">
+          <button onclick="removeStaff('${s.id}','${s.name}')" style="background:#fdecea;color:var(--red);border:1.5px solid #f5c6c8;border-radius:7px;padding:7px 14px;font-family:Inter,sans-serif;font-size:12px;font-weight:600;cursor:pointer">Remove</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function openAddStaff(){
+  document.getElementById('new-staff-name').value='';
+  document.getElementById('new-staff-role').value='';
+  document.getElementById('staff-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('new-staff-name').focus(),100);
+}
+
+function closeAddStaff(){
+  document.getElementById('staff-modal').style.display='none';
+}
+
+async function saveNewStaff(){
+  const name=document.getElementById('new-staff-name').value.trim();
+  const role=document.getElementById('new-staff-role').value.trim();
+  if(!name||!role){toast('Please enter both name and role.',true);return;}
+  const id='s'+Date.now();
+  const newMember={id,name,role};
+  if(demo){
+    STAFF.push(newMember);
+  } else {
+    try{
+      const fb=window._fb;
+      await fb.setDoc(fb.doc(fb.db,'staff_profiles',id),{name,role});
+      STAFF.push(newMember);
+    } catch(e){toast('Error saving: '+e.message,true);return;}
+  }
+  populateSelects();
+  renderStaffList();
+  renderGrid();
+  closeAddStaff();
+  toast('✓ '+name+' added successfully.');
+}
+
+async function removeStaff(id,name){
+  if(!confirm('Remove '+name+' from the system? Their TOIL history will be kept but they will no longer appear on the dashboard.')) return;
+  if(demo){
+    STAFF=STAFF.filter(s=>s.id!==id);
+  } else {
+    try{
+      const fb=window._fb;
+      await fb.deleteDoc(fb.doc(fb.db,'staff_profiles',id));
+      STAFF=STAFF.filter(s=>s.id!==id);
+    } catch(e){toast('Error removing: '+e.message,true);return;}
+  }
+  populateSelects();
+  renderStaffList();
+  renderGrid();
+  toast(name+' removed from dashboard.');
+}
+
+</script>
+
+<style>
+:root {
+  --navy:      #1a2c6e;
+  --navy-l:    #2a3f8f;
+  --red:       #cc2229;
+  --red-l:     #e03039;
+  --bg:        #f0f2f7;
+  --white:     #ffffff;
+  --border:    #dde2ef;
+  --text:      #1a2c6e;
+  --muted:     #7a85a3;
+  --body:      #3a4460;
+  --green:     #1a9e52;
+  --amber:     #d97b00;
+  --radius:    14px;
+  --sh:        0 2px 12px rgba(26,44,110,.08);
+  --sh-lg:     0 6px 28px rgba(26,44,110,.15);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--body);font-family:'Inter',sans-serif;font-size:14px;min-height:100vh}
+
+/* ── LOADING ── */
+#loader{position:fixed;inset:0;background:#fff;display:flex;align-items:center;justify-content:center;z-index:9999}
+.spin{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--navy);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── LOGIN ── */
+#login-screen{min-height:100vh;display:none;align-items:center;justify-content:center;background:linear-gradient(135deg,#eef0f7,#dde2ef)}
+.login-card{background:var(--white);border-radius:20px;padding:44px 40px;width:100%;max-width:420px;box-shadow:var(--sh-lg);border:1.5px solid var(--border)}
+.login-logo{text-align:center;margin-bottom:8px}
+.login-logo img{height:60px;background:white;padding:10px 16px;border-radius:10px}
+.login-dept{text-align:center;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:28px}
+.login-title{font-size:22px;font-weight:700;color:var(--navy);margin-bottom:4px}
+.login-sub{font-size:13px;color:var(--muted);margin-bottom:24px}
+.login-err{color:var(--red);font-size:12px;margin-top:8px;text-align:center;min-height:16px}
+.role-hint{margin-top:20px;padding:14px;background:#f4f6fb;border-radius:10px;border:1px solid var(--border);font-size:12px;color:var(--muted);line-height:1.7}
+.role-hint strong{color:var(--navy);display:block;margin-bottom:4px;font-size:13px}
+
+/* ── FORMS ── */
+.fg{margin-bottom:16px}
+label{display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:6px;letter-spacing:.02em}
+input,select,textarea{width:100%;background:#f8f9fd;border:1.5px solid var(--border);border-radius:9px;color:var(--body);font-family:'Inter',sans-serif;font-size:13px;padding:11px 13px;outline:none;transition:border-color .15s;appearance:none}
+input:focus,select:focus,textarea:focus{border-color:var(--navy);background:white}
+textarea{resize:vertical;min-height:80px}
+
+/* ── BUTTONS ── */
+.btn{font-family:'Inter',sans-serif;font-weight:600;border:none;border-radius:9px;cursor:pointer;transition:all .15s}
+.btn-primary{background:var(--navy);color:white;padding:12px 20px;font-size:14px}
+.btn-primary:hover{background:var(--navy-l)}
+.btn-primary.full{width:100%;padding:13px}
+.btn-sm-navy{background:var(--navy);color:white;border:none;border-radius:7px;padding:8px 16px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s}
+.btn-sm-navy:hover{background:var(--navy-l)}
+.btn-sm-ghost{background:white;color:var(--muted);border:1.5px solid var(--border);border-radius:7px;padding:8px 16px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-sm-ghost:hover{border-color:var(--red);color:var(--red)}
+.signout{background:none;border:1.5px solid rgba(255,255,255,.3);color:rgba(255,255,255,.75);font-family:'Inter',sans-serif;font-size:12px;font-weight:500;padding:7px 13px;border-radius:8px;cursor:pointer;transition:all .15s;margin-left:8px}
+.signout:hover{border-color:var(--red);color:white;background:rgba(204,34,41,.3)}
+
+/* ── HEADER ── */
+header{background:var(--navy);border-bottom:3px solid var(--red);padding:0 28px;display:flex;align-items:center;height:66px;position:sticky;top:0;z-index:100;box-shadow:0 4px 16px rgba(26,44,110,.3)}
+.h-logo img{height:44px;display:block;background:white;padding:6px 12px;border-radius:8px}
+.h-div{width:1px;height:36px;background:rgba(255,255,255,.25);margin:0 18px}
+.h-dept{font-size:13px;font-weight:700;color:white}
+.h-dept span{display:block;font-size:11px;font-weight:400;color:rgba(255,255,255,.65)}
+nav{display:flex;gap:4px;margin-left:auto;align-items:center}
+.nav-btn{background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);color:rgba(255,255,255,.85);font-family:'Inter',sans-serif;font-size:13px;font-weight:500;padding:8px 14px;border-radius:8px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:6px}
+.nav-btn:hover{background:rgba(255,255,255,.22);color:white}
+.nav-btn.active{background:white;color:var(--navy);border-color:white}
+.nav-btn.red-btn{background:var(--red);color:white;border-color:var(--red)}
+.nav-btn.red-btn:hover{background:var(--red-l)}
+.role-chip{font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;text-transform:uppercase;letter-spacing:.06em;margin-left:8px}
+.role-chip.admin{background:#fdecea;color:var(--red)}
+.role-chip.manager{background:#e8f0fe;color:var(--navy)}
+.role-chip.staff{background:#e8f5ee;color:var(--green)}
+
+/* ── MAIN / PAGES ── */
+main{padding:28px 32px;max-width:1200px}
+.page{display:none;animation:fadeIn .2s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── STATS ── */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}
+.stat-card{background:var(--white);border:1.5px solid var(--border);border-radius:var(--radius);padding:22px 20px;text-align:center;box-shadow:var(--sh);transition:box-shadow .2s}
+.stat-card:hover{box-shadow:var(--sh-lg)}
+.stat-card.t-red{border-top:3px solid var(--red)}
+.stat-card.t-navy{border-top:3px solid var(--navy)}
+.stat-card.t-amber{border-top:3px solid var(--amber)}
+.stat-emoji{font-size:26px;margin-bottom:8px}
+.stat-num{font-size:32px;font-weight:700;color:var(--navy);line-height:1;margin-bottom:4px}
+.stat-num.red{color:var(--red)}.stat-num.amber{color:var(--amber)}.stat-num.green{color:var(--green)}
+.stat-label{font-size:12px;color:var(--muted);font-weight:500}
+
+/* ── SECTION HDR ── */
+.sec-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.sec-title{font-size:20px;font-weight:700;color:var(--navy)}
+.sec-sub{font-size:13px;color:var(--muted);margin-top:2px}
+
+/* ── CARD ── */
+.card{background:var(--white);border:1.5px solid var(--border);border-radius:var(--radius);box-shadow:var(--sh);overflow:hidden;margin-bottom:24px}
+.card-body{padding:24px}
+
+/* ── STAFF GRID ── */
+.staff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+.sc{background:var(--white);border:1.5px solid var(--border);border-radius:var(--radius);padding:18px;box-shadow:var(--sh);transition:all .2s;position:relative}
+.sc:hover{box-shadow:var(--sh-lg);transform:translateY(-1px)}
+.sc.warn{border-color:var(--amber)}.sc.over{border-color:var(--red)}
+.sc-av{width:40px;height:40px;border-radius:50%;background:var(--navy);color:white;font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+.sc.warn .sc-av{background:var(--amber)}.sc.over .sc-av{background:var(--red)}
+.sc-name{font-weight:600;font-size:14px;color:var(--navy);margin-bottom:2px}
+.sc-role{font-size:11px;color:var(--muted);margin-bottom:14px}
+.sc-bal{font-size:28px;font-weight:700;color:var(--navy);line-height:1}
+.sc-bal.amber{color:var(--amber)}.sc-bal.red{color:var(--red)}
+.sc-of{font-size:12px;color:var(--muted);margin-bottom:10px}
+.bar-t{height:6px;background:#e8ecf5;border-radius:3px;overflow:hidden}
+.bar-f{height:100%;border-radius:3px;background:var(--navy);transition:width .5s}
+.bar-f.amber{background:var(--amber)}.bar-f.red{background:var(--red)}
+.cap-tag{position:absolute;top:14px;right:14px;font-size:9px;font-weight:700;letter-spacing:.06em;padding:3px 7px;border-radius:4px;text-transform:uppercase}
+.cap-tag.warn{background:#fff3e0;color:var(--amber)}.cap-tag.over{background:#fdecea;color:var(--red)}
+
+/* ── PENDING ── */
+.pend-item{display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;transition:background .15s}
+.pend-item:last-child{border-bottom:none}
+.pend-item:hover{background:#f8f9fd}
+.pend-av{width:38px;height:38px;border-radius:50%;background:var(--navy);color:white;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.pend-info{flex:1}
+.pend-name{font-weight:600;color:var(--navy);font-size:14px}
+.pend-detail{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* ── BADGES ── */
+.badge{font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;text-transform:uppercase;letter-spacing:.04em}
+.badge-earn{background:#e8f5ee;color:var(--green)}.badge-take{background:#fff3e0;color:var(--amber)}
+.badge-approved{background:#e8f5ee;color:var(--green)}.badge-pending{background:#f0f2f8;color:var(--muted)}.badge-rejected{background:#fdecea;color:var(--red)}
+
+/* ── TOGGLE ── */
+.tgl{display:flex;gap:8px}
+.tgl-opt{flex:1;background:white;border:1.5px solid var(--border);border-radius:8px;padding:10px;text-align:center;cursor:pointer;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--muted);transition:all .15s}
+.tgl-opt.active{background:var(--navy);border-color:var(--navy);color:white;font-weight:600}
+
+/* ── TABLE ── */
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:12px 16px;border-bottom:1.5px solid var(--border);background:#f8f9fd}
+tbody td{padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:#f8f9fd}
+.filters{display:flex;gap:12px;padding:16px 20px;border-bottom:1.5px solid var(--border);flex-wrap:wrap}
+
+/* ── EMPTY ── */
+.empty{text-align:center;padding:56px 32px;color:var(--muted)}
+.empty-icon{font-size:44px;margin-bottom:14px;opacity:.5}
+.empty-title{font-weight:600;font-size:15px;color:var(--navy);margin-bottom:6px}
+
+/* ── SETUP BANNER ── */
+.setup-banner{background:#fff8e1;border:1.5px solid #ffe082;border-radius:var(--radius);padding:16px 20px;margin-bottom:24px;font-size:13px;color:#7a5800}
+.setup-banner strong{display:block;margin-bottom:4px;color:#5a3e00;font-size:14px}
+.setup-banner code{background:rgba(0,0,0,.08);padding:2px 6px;border-radius:4px;font-size:12px}
+
+/* ── ACCESS MSG ── */
+.access-msg{background:#e8f0fe;border:1.5px solid #c5d4f8;border-radius:10px;padding:14px 18px;color:var(--navy);font-size:13px;margin-bottom:18px;display:none}
+
+/* ── TOAST ── */
+.toast{position:fixed;bottom:24px;right:24px;background:var(--navy);color:white;font-size:13px;font-weight:500;padding:12px 20px;border-radius:10px;box-shadow:0 4px 20px rgba(26,44,110,.3);z-index:9999;transform:translateY(60px);opacity:0;transition:all .3s cubic-bezier(.34,1.56,.64,1)}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.err{background:var(--red)}
+
+/* ── FORM GRID ── */
+.fg2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+
+@media(max-width:768px){
+  header{padding:0 16px}
+  main{padding:20px 16px}
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .fg2{grid-template-columns:1fr}
+  .nav-btn .lbl{display:none}
+  .login-card{margin:16px;padding:32px 20px}
+}
+</style>
+</head>
+<body>
+
+<!-- LOADER -->
+<div id="loader"><div class="spin"></div></div>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo"><img src="nsri-logo.png" alt="NSRI Logo"></div>
+    <div class="login-dept">Training Department — TOIL Tracker</div>
+    <div class="login-title">Sign In</div>
+    <div class="login-sub">Use your NSRI Training credentials</div>
+    <div class="fg"><label>Email Address</label><input type="email" id="l-email" placeholder="name@nsri.org.za" autocomplete="username"></div>
+    <div class="fg"><label>Password</label><input type="password" id="l-pass" placeholder="••••••••" autocomplete="current-password"></div>
+    <button class="btn btn-primary full" onclick="doLogin()">Sign In</button>
+    <div class="login-err" id="l-err"></div>
+
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" style="display:none">
+  <header>
+    <div class="h-logo"><img src="nsri-logo.png" alt="NSRI"></div>
+    <div class="h-div"></div>
+    <div class="h-dept">Training Department <span>TOIL Management System</span></div>
+    <nav>
+      <button class="nav-btn active" onclick="showPage('dashboard')">📋 <span class="lbl">TOIL Log</span></button>
+      <button class="nav-btn" onclick="showPage('log-entry')" id="nav-log">➕ <span class="lbl">New Entry</span></button>
+      <button class="nav-btn" onclick="showPage('history')">🗂 <span class="lbl">History</span></button>
+      <button class="nav-btn red-btn" onclick="showPage('log-entry')">⏱ <span class="lbl">Log TOIL</span></button>
+      <button class="nav-btn" id="nav-staff" onclick="showPage('manage-staff')" style="display:none">👥 <span class="lbl">Manage Staff</span></button>
+      <span class="role-chip" id="h-role"></span>
+      <span id="h-user" style="font-size:12px;color:rgba(255,255,255,.7);margin-left:4px"></span>
+      <button class="signout" onclick="doSignOut()">Sign Out</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- DASHBOARD -->
+    <div id="dashboard" class="page active">
+      <div class="stats-row" id="stats-row"></div>
+      <div class="sec-hdr">
+        <div><div class="sec-title">Pending Approvals</div><div class="sec-sub" id="pend-sub">—</div></div>
+      </div>
+      <div class="card" id="pend-card"><div class="empty"><div class="spin" style="margin:0 auto"></div></div></div>
+      <div class="sec-hdr" style="margin-top:4px">
+        <div><div class="sec-title">Team TOIL Balances</div><div class="sec-sub">5-day cap · warn at 4 days</div></div>
+        <button class="btn btn-primary" onclick="showPage('log-entry')">+ New Entry</button>
+      </div>
+      <div class="staff-grid" id="staff-grid"></div>
+    </div>
+
+    <!-- LOG ENTRY -->
+    <div id="log-entry" class="page">
+      <div class="sec-hdr"><div><div class="sec-title">Log TOIL Entry</div><div class="sec-sub" id="log-sub">Submit a TOIL request</div></div></div>
+      <div class="access-msg" id="access-msg">ℹ️ As a staff member your request will be submitted for manager approval.</div>
+      <div class="card"><div class="card-body" style="max-width:540px">
+        <div class="fg"><label>Entry Type</label>
+          <div class="tgl">
+            <button class="tgl-opt active" id="t-earn" onclick="setType('earn')">⬆ Earn TOIL</button>
+            <button class="tgl-opt" id="t-take" onclick="setType('take')">⬇ Take TOIL</button>
+          </div>
+        </div>
+        <div class="fg" id="staff-sel-wrap"><label>Staff Member</label>
+          <select id="e-staff"><option value="">Select staff member…</option></select>
+        </div>
+        <div class="fg2">
+          <div class="fg" style="margin-bottom:0"><label>Date</label><input type="date" id="e-date"></div>
+          <div class="fg" style="margin-bottom:0"><label>Number of Days</label><input type="number" id="e-days" min="0.5" max="10" step="0.5" placeholder="e.g. 1"></div>
+        </div>
+        <div class="fg" style="margin-top:16px"><label>Reason / Notes</label>
+          <textarea id="e-reason" placeholder="e.g. Saturday field work, StatCom conference, public holiday worked…"></textarea>
+        </div>
+        <div class="fg" id="submitter-sel-wrap"><label>Log as</label>
+          <select id="e-submitter">
+            <option value="staff">Staff request (requires approval)</option>
+            <option value="manager">Manager / Admin — auto-approved</option>
+          </select>
+        </div>
+        <button class="btn btn-primary full" onclick="submitEntry()">Submit Entry</button>
+      </div></div>
+    </div>
+
+    <!-- HISTORY -->
+    <div id="history" class="page">
+      <div class="sec-hdr"><div><div class="sec-title">TOIL History</div><div class="sec-sub">Full audit log</div></div></div>
+      <div class="card">
+        <div class="filters">
+          <div><label style="margin-bottom:4px">Staff</label><select id="f-staff" onchange="renderHistory()" style="width:190px"><option value="">All staff</option></select></div>
+          <div><label style="margin-bottom:4px">Type</label><select id="f-type" onchange="renderHistory()" style="width:140px"><option value="">All</option><option value="earn">Earn</option><option value="take">Take</option></select></div>
+          <div><label style="margin-bottom:4px">Status</label><select id="f-status" onchange="renderHistory()" style="width:140px"><option value="">All</option><option value="approved">Approved</option><option value="pending">Pending</option><option value="rejected">Rejected</option></select></div>
+        </div>
+        <div class="tw"><table>
+          <thead><tr><th>Date</th><th>Staff</th><th>Type</th><th>Days</th><th>Reason</th><th>Status</th></tr></thead>
+          <tbody id="hist-body"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- MANAGE STAFF (Admin only) -->
+    <div id="manage-staff" class="page">
+      <div class="sec-hdr">
+        <div><div class="sec-title">Manage Staff</div><div class="sec-sub">Add or remove staff profiles — Admin only</div></div>
+        <button class="btn btn-primary" onclick="openAddStaff()">+ Add Staff Member</button>
+      </div>
+
+      <div class="card" id="staff-list-card"></div>
+
+      <!-- ADD STAFF MODAL -->
+      <div id="staff-modal" style="display:none;position:fixed;inset:0;background:rgba(26,44,110,.4);z-index:1000;display:none;align-items:center;justify-content:center">
+        <div style="background:white;border-radius:16px;padding:36px;width:100%;max-width:440px;box-shadow:0 8px 40px rgba(26,44,110,.2);margin:20px">
+          <div style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:6px">Add Staff Member</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:24px">New profile will appear in the TOIL dashboard</div>
+          <div class="fg"><label>Full Name</label><input type="text" id="new-staff-name" placeholder="e.g. Tarne Smith"></div>
+          <div class="fg"><label>Job Title / Role</label><input type="text" id="new-staff-role" placeholder="e.g. Ops Trainer"></div>
+          <div style="display:flex;gap:10px;margin-top:8px">
+            <button class="btn btn-primary" style="flex:1" onclick="saveNewStaff()">Add Staff Member</button>
+            <button onclick="closeAddStaff()" style="flex:1;background:white;border:1.5px solid var(--border);border-radius:9px;padding:12px;font-family:Inter,sans-serif;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── CONSTANTS ─────────────────────────────────────────────────────
+const CAP=5, WARN=4;
+let STAFF=[
+  {id:'s1',name:'Amara Dlamini',  role:'Field Officer'},
+  {id:'s2',name:'Sipho Nkosi',    role:'Ops Trainer'},
+  {id:'s3',name:'Carla Ferreira', role:'EOC Specialist'},
+  {id:'s4',name:'James Hendricks',role:'Field Officer'},
+  {id:'s5',name:'Lerato Mokoena', role:'Ops Trainer'},
+];
+
+// ── STATE ─────────────────────────────────────────────────────────
+let cUser=null, cRole=null, cType='earn', entries=[], unsub=null, demo=false;
+
+// ── BOOT ─────────────────────────────────────────────────────────
+window.addEventListener('load',()=>{
+  const fb=window._fb;
+  
+  const unconfigured=!fb||!window._fb;
+  if(unconfigured){startDemo();return;}
+  fb.onAuthStateChanged(fb.auth,async u=>{
+    hideLoader();
+    if(u){cUser=u;await loadRole(u.uid);showApp();}
+    else{showLogin();}
+  });
+});
+
+async function loadRole(uid){
+  try{const s=await window._fb.getDoc(window._fb.doc(window._fb.db,'users',uid));cRole=s.exists()?s.data().role||'staff':'staff';}
+  catch{cRole='staff';}
+}
+
+// ── AUTH ──────────────────────────────────────────────────────────
+async function doLogin(){
+  const e=document.getElementById('l-email').value.trim();
+  const p=document.getElementById('l-pass').value;
+  const err=document.getElementById('l-err');
+  err.textContent='';
+  if(!e||!p){err.textContent='Please enter email and password.';return;}
+  try{showLoader();await window._fb.signInWithEmailAndPassword(window._fb.auth,e,p);}
+  catch{hideLoader();err.textContent='Invalid email or password.';}
+}
+
+async function doSignOut(){
+  try{await window._fb.signOut(window._fb.auth);}catch{}
+  if(unsub){unsub();unsub=null;}
+  cUser=null;cRole=null;entries=[];
+  document.getElementById('app').style.display='none';
+  document.getElementById('login-screen').style.display='flex';
+}
+
+// ── DEMO ──────────────────────────────────────────────────────────
+function startDemo(){
+  hideLoader();demo=true;cRole='admin';
+  cUser={uid:'demo',email:'demo@nsri.org.za',displayName:'Demo Admin'};
+  entries=[
+    {id:'e1',staff:'s1',type:'earn',date:'2026-03-01',days:2,  reason:'Saturday field work',       status:'approved'},
+    {id:'e2',staff:'s2',type:'earn',date:'2026-03-08',days:1,  reason:'Public holiday worked',      status:'approved'},
+    {id:'e3',staff:'s3',type:'earn',date:'2026-03-09',days:3,  reason:'StatCom conference weekend', status:'approved'},
+    {id:'e4',staff:'s1',type:'take',date:'2026-03-14',days:1,  reason:'Rest day',                   status:'approved'},
+    {id:'e5',staff:'s4',type:'earn',date:'2026-03-15',days:4.5,reason:'Regional meeting + travel',  status:'approved'},
+    {id:'e6',staff:'s5',type:'earn',date:'2026-03-16',days:1,  reason:'Sunday EOC shift',           status:'approved'},
+    {id:'e7',staff:'s2',type:'take',date:'2026-03-17',days:0.5,reason:'Half day off',              status:'pending'},
+    {id:'e8',staff:'s3',type:'take',date:'2026-03-20',days:1,  reason:'Family commitment',          status:'pending'},
+  ];
+  document.getElementById('setup-banner').style.display='block';
+  showApp();
+}
+
+// ── SHOW / HIDE ───────────────────────────────────────────────────
+function showLoader(){document.getElementById('loader').style.display='flex';}
+function hideLoader(){document.getElementById('loader').style.display='none';}
+function showLogin(){document.getElementById('login-screen').style.display='flex';document.getElementById('app').style.display='none';}
+
+function showApp(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app').style.display='block';
+  const chip=document.getElementById('h-role');
+  chip.textContent=cRole;chip.className=`role-chip ${cRole}`;
+  document.getElementById('h-user').textContent=cUser.displayName||cUser.email||'';
+  applyRoleUI();
+  populateSelects();
+  document.getElementById('e-date').value=todayStr();
+  if(!demo){subscribeEntries();loadStaffFromFirestore();}else{renderAll();}
+}
+
+function applyRoleUI(){
+  const isMgr=cRole==='manager'||cRole==='admin';
+  const isAdmin=cRole==='admin';
+  const isStaff=cRole==='staff';
+  document.getElementById('staff-sel-wrap').style.display=isMgr?'':'none';
+  document.getElementById('submitter-sel-wrap').style.display=isMgr?'':'none';
+  document.getElementById('access-msg').style.display=isStaff?'block':'none';
+  document.getElementById('log-sub').textContent=isStaff?'Your request will go to manager for approval':'Log directly or submit on behalf of staff';
+  document.getElementById('nav-staff').style.display=isAdmin?'flex':'none';
+}
+
+// ── FIRESTORE REALTIME ────────────────────────────────────────────
+function subscribeEntries(){
+  const fb=window._fb;
+  const q=fb.query(fb.collection(fb.db,'toil_entries'),fb.orderBy('date','desc'));
+  unsub=fb.onSnapshot(q,snap=>{entries=snap.docs.map(d=>({id:d.id,...d.data()}));renderAll();});
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────
+function bal(sid){return Math.round(entries.filter(e=>e.staff===sid&&e.status==='approved').reduce((a,e)=>e.type==='earn'?a+e.days:a-e.days,0)*10)/10;}
+function sname(id){return STAFF.find(s=>s.id===id)?.name||id;}
+function ini(n){return n.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();}
+function todayStr(){return new Date().toISOString().split('T')[0];}
+function fmt(d){return new Date(d+'T00:00:00').toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});}
+
+function populateSelects(){
+  ['e-staff','f-staff'].forEach(id=>{
+    const el=document.getElementById(id);
+    while(el.options.length>1)el.remove(1);
+    STAFF.forEach(s=>{const o=new Option(s.name,s.id);el.add(o);});
+  });
+}
+
+// ── RENDER ────────────────────────────────────────────────────────
+function renderAll(){renderStats();renderPending();renderGrid();renderHistory();}
+
+function renderStats(){
+  const pend=entries.filter(e=>e.status==='pending').length;
+  const over=STAFF.filter(s=>bal(s.id)>=CAP).length;
+  const near=STAFF.filter(s=>{const b=bal(s.id);return b>=WARN&&b<CAP;}).length;
+  const tot=entries.filter(e=>e.type==='earn'&&e.status==='approved').reduce((a,e)=>a+e.days,0);
+  document.getElementById('stats-row').innerHTML=`
+    <div class="stat-card t-navy"><div class="stat-emoji">📅</div><div class="stat-num">${tot}</div><div class="stat-label">Total Days Banked</div></div>
+    <div class="stat-card t-amber"><div class="stat-emoji">⏳</div><div class="stat-num amber">${pend}</div><div class="stat-label">Pending Approvals</div></div>
+    <div class="stat-card t-amber"><div class="stat-emoji">⚠️</div><div class="stat-num amber">${near}</div><div class="stat-label">Near Cap (≥${WARN}d)</div></div>
+    <div class="stat-card t-red"><div class="stat-emoji">🚨</div><div class="stat-num ${over?'red':'green'}">${over}</div><div class="stat-label">Over Cap (≥${CAP}d)</div></div>`;
+}
+
+function renderPending(){
+  const isMgr=cRole==='manager'||cRole==='admin';
+  const pend=entries.filter(e=>e.status==='pending');
+  document.getElementById('pend-sub').textContent=`${pend.length} request${pend.length!==1?'s':''} awaiting review`;
+  const c=document.getElementById('pend-card');
+  if(!pend.length){c.innerHTML='<div class="empty"><div class="empty-icon">✅</div><div class="empty-title">All caught up</div><p>No pending approvals</p></div>';return;}
+  c.innerHTML=pend.map(e=>{
+    const n=sname(e.staff);
+    const btns=isMgr
+      ?`<button class="btn-sm-navy" onclick="approve('${e.id}')">Approve</button><button class="btn-sm-ghost" onclick="reject('${e.id}')">Reject</button>`
+      :`<span style="font-size:12px;color:var(--muted)">Awaiting manager</span>`;
+    return `<div class="pend-item">
+      <div class="pend-av">${ini(n)}</div>
+      <div class="pend-info"><div class="pend-name">${n}</div><div class="pend-detail">${fmt(e.date)} · ${e.days} day${e.days!==1?'s':''} · ${e.reason}</div></div>
+      <span class="badge badge-${e.type}">${e.type==='earn'?'⬆ Earn':'⬇ Take'}</span>
+      ${btns}</div>`;
+  }).join('');
+}
+
+function renderGrid(){
+  document.getElementById('staff-grid').innerHTML=STAFF.map(s=>{
+    const b=bal(s.id),pct=Math.min((b/CAP)*100,100);
+    const cls=b>=CAP?'over':b>=WARN?'warn':'';
+    const nc=b>=CAP?'red':b>=WARN?'amber':'';
+    const tag=b>=CAP?'<span class="cap-tag over">Over Cap</span>':b>=WARN?'<span class="cap-tag warn">Near Cap</span>':'';
+    return `<div class="sc ${cls}">${tag}
+      <div class="sc-av">${ini(s.name)}</div>
+      <div class="sc-name">${s.name}</div><div class="sc-role">${s.role}</div>
+      <div class="sc-bal ${nc}">${b}</div><div class="sc-of">of ${CAP} days</div>
+      <div class="bar-t"><div class="bar-f ${nc}" style="width:${pct}%"></div></div></div>`;
+  }).join('');
+}
+
+function renderHistory(){
+  const sf=document.getElementById('f-staff').value;
+  const tf=document.getElementById('f-type').value;
+  const stf=document.getElementById('f-status').value;
+  let rows=[...entries];
+  if(cRole==='staff')rows=rows.filter(e=>e.staff===cUser.uid||e.staffUid===cUser.uid);
+  if(sf)rows=rows.filter(e=>e.staff===sf);
+  if(tf)rows=rows.filter(e=>e.type===tf);
+  if(stf)rows=rows.filter(e=>e.status===stf);
+  const b=document.getElementById('hist-body');
+  if(!rows.length){b.innerHTML='<tr><td colspan="6"><div class="empty"><div class="empty-icon">🗂</div><div class="empty-title">No entries found</div></div></td></tr>';return;}
+  b.innerHTML=rows.map(e=>`<tr>
+    <td>${fmt(e.date)}</td><td><strong>${sname(e.staff)}</strong></td>
+    <td><span class="badge badge-${e.type}">${e.type==='earn'?'⬆ Earn':'⬇ Take'}</span></td>
+    <td><strong>${e.days}d</strong></td><td style="color:var(--muted)">${e.reason}</td>
+    <td><span class="badge badge-${e.status}">${e.status}</span></td></tr>`).join('');
+}
+
+// ── ACTIONS ───────────────────────────────────────────────────────
+function setType(t){
+  cType=t;
+  document.getElementById('t-earn').classList.toggle('active',t==='earn');
+  document.getElementById('t-take').classList.toggle('active',t==='take');
+}
+
+async function submitEntry(){
+  const isMgr=cRole==='manager'||cRole==='admin';
+  const isStaff=cRole==='staff';
+  const sid=isStaff?cUser.uid:document.getElementById('e-staff').value;
+  const date=document.getElementById('e-date').value;
+  const days=parseFloat(document.getElementById('e-days').value);
+  const reason=document.getElementById('e-reason').value.trim();
+  const subVal=isMgr?document.getElementById('e-submitter').value:'staff';
+  if(!sid||!date||!days||!reason){toast('Please fill in all fields.',true);return;}
+  if(cType==='take'&&days>bal(sid)){toast('Cannot take more TOIL than current balance.',true);return;}
+  const status=(isMgr&&subVal==='manager')?'approved':'pending';
+  const entry={staff:sid,staffUid:sid,type:cType,date,days,reason,status,createdAt:new Date().toISOString(),createdBy:cUser.uid};
+  if(demo){entry.id='e'+Date.now();entries.unshift(entry);renderAll();}
+  else{
+    try{showLoader();await window._fb.addDoc(window._fb.collection(window._fb.db,'toil_entries'),entry);hideLoader();}
+    catch(e){hideLoader();toast('Error: '+e.message,true);return;}
+  }
+  document.getElementById('e-days').value='';
+  document.getElementById('e-reason').value='';
+  toast(status==='approved'?'✓ Entry logged and approved.':'✓ Request submitted for approval.');
+  showPage('dashboard');
+}
+
+async function approve(id){await updateStatus(id,'approved');toast('✓ Entry approved.');}
+async function reject(id){await updateStatus(id,'rejected');toast('Entry rejected.');}
+
+async function updateStatus(id,status){
+  if(demo){entries=entries.map(e=>e.id===id?{...e,status}:e);renderAll();return;}
+  try{const fb=window._fb;await fb.updateDoc(fb.doc(fb.db,'toil_entries',id),{status});}
+  catch(e){toast('Error: '+e.message,true);}
+}
+
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  if(id==='manage-staff'){document.getElementById('nav-staff').classList.add('active');renderStaffList();return;}
+  ['dashboard','log-entry','history'].forEach((p,i)=>{if(p===id)document.querySelectorAll('.nav-btn')[i].classList.add('active');});
+}
+
+function toast(msg,err=false){
+  const el=document.getElementById('toast');
+  el.textContent=msg;el.className='toast show'+(err?' err':'');
+  setTimeout(()=>el.className='toast',3200);
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&document.getElementById('login-screen').style.display==='flex')doLogin();
+});
+
+</script>
+</body>
+</html>
